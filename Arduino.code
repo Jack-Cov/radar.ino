@@ -1,1 +1,137 @@
+// Radar alarm: HC-SR04 on an SG90 servo sweeps back and forth.
+// Object detected -> servo pauses, red LED + buzzer on, LCD shows angle and
+//                    live distance, Serial Monitor logs it.
+// Object gone     -> green LED on, servo resumes sweeping.
 
+#include <Servo.h>
+#include <LiquidCrystal.h>
+
+// ---------- Pins ----------
+const int SERVO_PIN  = 9;
+const int TRIG_PIN   = 10;
+const int ECHO_PIN   = 11;
+const int RED_LED    = 4;
+const int GREEN_LED  = 5;
+const int BUZZER_PIN = 8;
+
+// LiquidCrystal(RS, E, D4, D5, D6, D7)
+LiquidCrystal lcd(22, 23, 24, 25, 26, 27);
+
+// ---------- Settings ----------
+const int  MIN_ANGLE      = 15;
+const int  MAX_ANGLE      = 165;
+const int  DETECT_CM      = 20;     // closer than this = detected
+const int  SETTLE_MS      = 30;     // time for servo to reach each angle
+const int  CLEAR_READINGS = 3;      // clear reads in a row before resuming
+const bool PRINT_ALL      = false;  // true = print every reading to Serial
+
+Servo servo;
+
+// Sends an ultrasonic pulse and returns the distance in cm.
+// Returns 999 if nothing echoes back (nothing in range).
+long readDistanceCm() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  long duration = pulseIn(ECHO_PIN, HIGH, 25000UL);  // wait up to 25 ms
+  if (duration == 0) return 999;
+  return duration * 0.034 / 2;   // sound travels ~0.034 cm per microsecond
+}
+
+// Writes the angle and distance on the LCD's second row.
+// Short labels so it fits 16 columns even with a 3-digit angle.
+// Trailing spaces erase leftover characters from a previous reading.
+void showReading(int angle, long d) {
+  lcd.setCursor(0, 1);
+  lcd.print("A:");
+  lcd.print(angle);
+  lcd.print(" D:");
+  lcd.print(d);
+  lcd.print("cm    ");
+}
+
+// Switches LEDs, buzzer, LCD, and Serial output to the given state.
+void setState(bool isDetected, int angle, long d) {
+  digitalWrite(RED_LED,    isDetected ? HIGH : LOW);
+  digitalWrite(BUZZER_PIN, isDetected ? HIGH : LOW);
+  digitalWrite(GREEN_LED,  isDetected ? LOW  : HIGH);
+
+  lcd.clear();
+  if (isDetected) {
+    lcd.setCursor(0, 0);
+    lcd.print("DETECTED!");
+    showReading(angle, d);
+
+    Serial.print("DETECTED at ");
+    Serial.print(angle);
+    Serial.print(" degrees, ");
+    Serial.print(d);
+    Serial.println(" cm");
+  } else {
+    lcd.setCursor(0, 0);
+    lcd.print("Area clear");
+
+    Serial.println("Area clear");
+  }
+}
+
+// Moves to an angle and checks for an object. If one is found, holds the
+// servo still until the object has been gone for CLEAR_READINGS reads.
+void scanAt(int angle) {
+  servo.write(angle);
+  delay(SETTLE_MS);
+
+  long d = readDistanceCm();
+
+  if (PRINT_ALL) {
+    Serial.print("Angle: ");
+    Serial.print(angle);
+    Serial.print("  Distance: ");
+    Serial.print(d);
+    Serial.println(" cm");
+  }
+
+  if (d < DETECT_CM) {
+    setState(true, angle, d);
+
+    int clearCount = 0;
+    while (clearCount < CLEAR_READINGS) {
+      delay(100);
+      d = readDistanceCm();
+
+      if (d < DETECT_CM) {
+        clearCount = 0;          // still there, reset the counter
+        showReading(angle, d);   // live distance update
+      } else {
+        clearCount++;
+      }
+    }
+
+    setState(false, angle, d);   // object gone, back to clear
+  }
+}
+
+void setup() {
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(RED_LED, OUTPUT);
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  lcd.begin(16, 2);
+  Serial.begin(9600);
+
+  servo.attach(SERVO_PIN);
+  servo.write(MIN_ANGLE);
+  delay(500);
+
+  setState(false, MIN_ANGLE, 0);   // start in the clear state
+}
+
+void loop() {
+  for (int a = MIN_ANGLE; a <= MAX_ANGLE; a++) scanAt(a);
+  for (int a = MAX_ANGLE; a > MIN_ANGLE; a--) scanAt(a);
+}
